@@ -50,7 +50,12 @@ A pre-print can be found here:
 
 ---
 
-## Contact
+## Collaborate with Us
 
-We are actively seeking additional stepped-wedge and other cluster randomized trials to pilot ANSWERS. Please don't hesitate to contact Carly Bobak at Carly.A.Bobak@dartmouth.edu if you're interested in trying out ANSWERS.
+## 🤝 Collaborate with Us
+
+We are actively looking for collaborators running **stepped-wedge** or other **cluster randomized trials** to pilot the **ANSWER** framework. If you're interested in exploring how network-informed spillover adjustment could enhance your trial analysis, we'd love to hear from you!
+
+Reach out to **Carly Bobak** at [Carly.A.Bobak@dartmouth.edu](mailto:Carly.A.Bobak@dartmouth.edu) to learn more or discuss a potential collaboration.
+
 
