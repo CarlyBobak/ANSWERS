@@ -179,7 +179,11 @@ t<-tidy_data %>% getDescriptionStatsBy("Number of Intervened Physicians Associat
 
 ## Prior Model
 
-James coded version in R:
+Results from:
+
+Mohan, D., O’Malley, A. J., Chelen, J., MacMartin, M., Murphy, M., Rudolph, M., ... & Barnato, A. E. (2023). Using a Video Game Intervention to Increase Hospitalists’ Advance Care Planning Conversations with Older Adults: a Stepped Wedge Randomized Clinical Trial. Journal of General Internal Medicine, 38(14), 3224-3234.
+
+Recoded in R
 
 ```{r}
 mod1 <- glmer(acp~phase+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),data=data)
