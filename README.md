@@ -33,6 +33,15 @@ git clone https://github.com/CarlyBobak/ANSWER.git
 
 ## Repository Contents
 
+- **`Create_Spillover_Networks.R`**  
+  Generates physician social networks from billing data and computes a time-varying spillover metric for each physician across trial steps.
+
+- **`Make_Spillover_Variables.R`**  
+  Aggregates physician-level spillover exposure to the patient level based on encounters during a hospital stay. Output is formatted for use in downstream statistical modeling.
+
+- **`Spillover_Models.Rmd`**  
+  Contains analysis code for fitting models using the spillover variables and formatting model results for interpretation and reporting.
+
 ---
 
 ## Citation
