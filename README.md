@@ -1,6 +1,6 @@
-# ANSWER: Adjustment for Network Spillover in Stepped-Wedge-based Experimental Rollouts and Studies
+# ANSWERS: Adjustment for Network Spillover in Stepped-Wedge-based Experimental Rollouts and Studies
 
-**ANSWER** is an R-based toolkit for quantifying and adjusting for spillover effects in stepped-wedge clinical trials using physician social networks. It supports network-informed exposure calculation and provides outputs ready for use in regression models that account for contamination due to social proximity.
+**ANSWERS** is an R-based toolkit for quantifying and adjusting for spillover effects in stepped-wedge clinical trials using physician social networks. It supports network-informed exposure calculation and provides outputs ready for use in regression models that account for contamination due to social proximity.
 
 This package helps trialists *get ANSWERS* when treatment effects aren't contained by design.
 
