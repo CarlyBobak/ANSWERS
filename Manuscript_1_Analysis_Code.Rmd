@@ -1,0 +1,235 @@
+---
+title: "Publication Facing Script"
+output: html_notebook
+---
+
+## Load our libraries
+
+```{r}
+library(lme4)
+library(nlme)
+library(Gmisc)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(broom.mixed)
+```
+
+## Load in the Data
+
+```{r}
+#set some new pathways
+outdir<-"/drives/drive1/54054dua/idata/cbobak/"
+outdir_spillover<-paste(outdir,"spillover_analysis/",sep="")
+data<-read.csv(paste(outdir_spillover,"acp_data_with_spill_strict_prior_stochastic_gameTime.csv",sep=""))
+data$chosp_step <- as.factor(data$hosp_step)
+data$ctrialmonth <- as.factor(data$trialmonth)
+data$cbregion <- as.factor(data$bregion)
+data$cageg <- as.factor(data$ageg)
+data$ccovid_status <- as.factor(data$covid_status)
+data$ccharl_sc <- as.factor(data$charl_sc)
+data$csq <- as.factor(data$sq)
+data$gameTime<-data$total_game_time
+```
+
+This is the data file from your model combined with two new variables: hospWPost and physWPost which contain
+
+$$ W_tPost_t$$ and $$W_tPostPhys_t$$. 
+
+Note I did take these numbers with respect to the step associated with the patient stay. 
+
+```{r, include=FALSE}
+variable_mapping <- list(
+  #"(Intercept)" = "Baseline",
+  "gameTime" = "Game Time",
+  "chosp_step2" = "Step of the trial (Two)",
+  "chosp_step3" = "Step of the trial (Three)",
+  "chosp_step4" = "Step of the trial (Four)",
+  "chosp_step5" = "Step of the trial (Five)",
+  "n_intervened_mds" = "Number of Intervened Physicians Associated with Stay",
+  "n_stay_mds" = "Number of Physicians Associated with Stay",
+  "physWPost" = "Physician Spillover",
+  "ctrialmonth2" = "Month of the Trial (Two)",
+  "ctrialmonth3" = "Month of the Trial (Three)",
+  "ctrialmonth4" = "Month of the Trial (Four)",
+  "ctrialmonth5" = "Month of the Trial (Five)",
+  "ctrialmonth6" = "Month of the Trial (Six)",
+  "ctrialmonth7" = "Month of the Trial (Seven)",
+  "ctrialmonth8" = "Month of the Trial (Eight)",
+  "ctrialmonth9" = "Month of the Trial (Nine)",
+  "ctrialmonth10" = "Month of the Trial (Ten)",
+  "ctrialmonth11" = "Month of the Trial (Eleven)",
+  "ctrialday" = "Trial Day",
+  "cbregionsouth" = "Region (South)",
+  "cbregionwest" = "Region (West)",
+  "cageg75" = "Patient age (75–84 years)",
+  "cageg85" = "Patient age (≥ 85 years)",
+  "ccovid_statusYes" = "Covid status (Covid positive)",
+  "cad_cd" = "Coronary artery disease",
+  "dem_cd" = "Dementia",
+  "heart_cd" = "Heart failure",
+  "diab_cd" = "Diabetes",
+  "lung_cd" = "COPD",
+  "ccharl_sc1" = "Charlson score (One)",
+  "ccharl_sc2" = "Charlson score (Two)",
+  "ccharl_sc3" = "Charlson score (Three)",
+  "ccharl_sc4" = "Charlson score (Four)",
+  "ccharl_sc5" = "Charlson score (Five)",
+  "n_w2mds" = "Practice size",
+  "covid_stays" = "Proportion of hospitalizations with COVID",
+  "Q2_Y20_Adj_ACP" = "ACP rate in Quarter 2 of 2020 (effect of a 10 percentage-point increase)",
+  "Delta_ACP" = "Change in ACP rate between Q2 of 2019 and Q1 of 2020",
+  "csqY" = "Would you be surprised if the patient died in the next year (Yes)",
+  "phase" = "Intervention"
+)
+
+reorder_by_priority<-function(df,priority_vars){
+  for(var in rev(priority_vars)){
+    if(var %in% df$Term){
+      priority_row <- which(df$Term==var)
+      df<-rbind(df[priority_row,],df[-priority_row,])
+    }
+  }
+  return(df)
+}
+
+format_model_output_logistic <- function(model, variable_mapping) {
+  # Exponentiate estimates for odds ratios
+  tidy_model <- broom.mixed::tidy(model) %>%
+    mutate(estimate = exp(estimate))
+
+  # Dynamically replace term components based on mapping
+  tidy_model$term <- sapply(tidy_model$term, function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Calculate and exponentiate 95% CI for odds ratios
+  ci <- exp(confint(model, method="Wald", level=0.95))
+  ci_df <- as.data.frame(ci)
+  names(ci_df) <- c("lower_ci", "upper_ci")
+  ci_df$term<-sapply(row.names(ci_df), function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Merge tidy model output with CIs
+  tidy_model <- left_join(tidy_model,ci_df)
+  
+  # Include formatted output with Odds Ratios, CIs, and p-values
+  tidy_model <- tidy_model %>%
+    mutate(formatted_p = ifelse(p.value>=0.001,round(p.value,3),"<0.001"),
+      formatted_output = paste0(round(estimate, 3),
+                                     " (", round(lower_ci, 3), ", ", round(upper_ci, 3), ")"))
+  
+  # Define priority variables and their interactions
+  priority_vars <- c("(Intercept)","Intervention", "Game Time", "Number of Intervened Physicians Associated with Stay",
+                     "Number of Physicians Associated with Stay","Physician Spillover", "Step of the trial", "Proportion of hospitalizations with COVID")
+  
+  tidy_model$Term <- tidy_model$term
+  tidy_model<-reorder_by_priority(tidy_model,priority_vars = priority_vars)
+  
+  # Select and rename columns for publication
+  tidy_model <- tidy_model %>%
+    select(Term = term, Formatted = formatted_output, P_Value_Formatted = formatted_p)
+  
+  return(tidy_model)
+}
+
+```
+
+## Table 1
+
+```{r}
+tidy_data<-data %>% select(acp,n_intervened_mds,chosp_step,n_stay_mds,physWPost,bregion,cageg,covid_status,cad_cd,dem_cd,heart_cd,diab_cd,lung_cd,ccharl_sc,n_w2mds,covid_stays,sq)
+
+
+t<-tidy_data %>% getDescriptionStatsBy("Number of Intervened Physicians Associated with Stay" = n_intervened_mds ,
+                                     "Number of Physicians Associated with Stay"=n_stay_mds,
+                                     "Physician Spillover"=physWPost,
+                                     "Region"=bregion,
+                                     "Patient age"=cageg,
+                                     "Covid status"=covid_status,
+                                     "Coronary artery disease"=cad_cd,
+                                     "Dementia"=dem_cd,
+                                     "Heart failure"=heart_cd,
+                                     "Diabetes"=diab_cd,
+                                     "COPD"=lung_cd,
+                                     "Charlson score"=ccharl_sc,
+                                     "Practice size"=n_w2mds,
+                                     "Proportion of hospitalizations with COVID"=covid_stays,
+                                     "Would you be surprised if the patient died in the next year?"=covid_stays,
+                                    by=acp,digits=3,statistics=T)
+
+```
+
+## Prior Model
+
+James coded version in R:
+
+```{r}
+mod1 <- glmer(acp~phase+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),data=data)
+
+summary(mod1)
+```
+
+Format the output
+
+```{r}
+mod1_res<-format_model_output_logistic(mod1,variable_mapping = variable_mapping)
+```
+
+```{r}
+write.csv(mod1_res,"manuscript_1_prior_model.csv",row.names=F)
+```
+
+## Spillover and Intervention Interaction
+
+```{r}
+mod_spill <- glmer(acp~phase*physWPost+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),data=data)
+
+summary(mod_spill)
+```
+
+```{r}
+mod_spill_res<-format_model_output_logistic(mod_spill,variable_mapping = variable_mapping)
+
+mod_spill_res
+```
+
+```{r}
+write.csv(mod_spill_res,"manuscript_1_spillover_interaction_model.csv",row.names=F)
+```
+
+
+## Spillover, Intervention and Step Interaction
+
+```{r}
+mod_spill_step <- glmer(acp~phase*physWPost+chosp_step*phase+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),data=data)
+
+summary(mod_spill_step)
+```
+
+```{r}
+mod_spill_step_res<-format_model_output_logistic(mod_spill,variable_mapping = variable_mapping)
+
+mod_spill_step_res
+```
+
+```{r}
+write.csv(mod_spill_step_res,"manuscript_1_spillover_step_interaction_model.csv",row.names=F)
+```
