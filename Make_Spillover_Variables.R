@@ -12,7 +12,7 @@ for (i in seq_len(nrow(data))) {
   
   # Identify hospital and trial step for the current patient stay
   hospid <- data$HospitalID[i]
-  step <- as.numeric(data$chosp_step[i])
+  step <- as.numeric(data$trial_step[i])
   stay <- data$patient_stay_id[i]
   
   # Find all unique NPIs (physicians) encountered by this patient during their stay
