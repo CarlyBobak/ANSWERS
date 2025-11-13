@@ -189,12 +189,11 @@ for (step in 1:5) {
   
   # Ensure no rows have zero sum (i.e., disconnected nodes)
   if (any(rs == 0)) {
-    ix <- which(rs == 0)
-    W[ix, ix] <- 1
+    rs[rs==0]<-1
   }
   
   # Normalize rows to ensure stochastic interpretation
-  W <- W / rowSums(W)
+  W <- W /rs
   
   # Calculate exposure using trial step data
   Post <- ifelse(npi_trial_data[W@Dimnames[[1]], "trial_step"] < step, 1, 0)
