@@ -42,6 +42,9 @@ git clone https://github.com/CarlyBobak/ANSWER.git
 - **`Spillover_Models.Rmd`**  
   Contains analysis code for fitting models using the spillover variables and formatting model results for interpretation and reporting.
 
+- **`Simulation Study`**
+  Contains code and results from a simulation study. 
+
 ---
 
 ## Citation
