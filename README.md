@@ -42,6 +42,8 @@ Analysis scripts associated with Bobak et al. (2026), published in *Health Servi
 - **`Create_Spillover_Networks.R`** -- Generates physician social networks from billing data and computes a time-varying spillover metric for each physician across trial steps.
 - **`Make_Spillover_Variables.R`** -- Aggregates physician-level spillover exposure to the patient level based on encounters during a hospital stay. Output is formatted for use in downstream statistical modeling.
 - **`Spillover_Models.Rmd`** -- Contains analysis code for fitting models using the spillover variables and formatting model results for interpretation and reporting.
+- **`Simulation Study`** -- Contains code and results from a simulation study evaluating the ANSWERS methodology.
+
 
 ### Causal Networks Scripts
 
@@ -52,10 +54,6 @@ Analysis scripts associated with O'Malley, Bobak & Barnato (2026), published in 
 - **`retention_models_potout.Rmd`** -- Retention models under potential outcomes framework.
 - **`retention_models_tinv_fe.Rmd`** -- Time-invariant retention models with fixed effects.
 - **`retention_models_tinv_potout.Rmd`** -- Time-invariant retention models under potential outcomes framework.
-
-### Simulation Study
-
-Contains code and results from a simulation study evaluating the ANSWERS methodology.
 
 ---
 
