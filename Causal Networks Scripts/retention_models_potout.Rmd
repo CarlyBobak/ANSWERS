@@ -1,0 +1,505 @@
+## Script for Network augmented SW-CRT mixed-effect model and causal estimates based on potential outcomes ##
+##  when network is evaluated in the prior time-period ##
+## Carly's backbone script with James model specification 4/15/2026 ##
+
+---
+title: "Publication Facing Script"
+output: html_notebook
+---
+
+## Load our libraries
+
+```{r}
+#install.packages("broom.mixed",repos=NULL,contriburl="file:/opt/software/cran/src/contrib")
+library(lme4)
+library(nlme)
+library(Gmisc)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(broom.mixed)
+```
+
+Setting glmer options:
+
+```{r}
+#options(lme4.control=glmerControl(optimizer="nloptwrap",calc.derivs = F)) #Carly
+options(lme4.control=glmerControl(optimizer="bobyqa",tolPwrss=1e-7,optCtrl=list(maxfun=1e5))) #James
+```
+
+#Optimization settings to avoid or mitigate convergence warnings:
+#mod_spill <- glmer("model",family=binomial(link="logit"),data=data, nAGQ=2, #control=glmerControl(optimizer="bobyqa",tolPwrss=1e-7,optCtrl=list(maxfun=1e5)))
+
+## Load in the Data
+
+```{r}
+#set some new pathways
+outdir<-"/drives/drive1/54054dua/idata/cbobak/"
+outdir_spillover<-paste(outdir,"spillover_analysis/",sep="")
+data<-read.csv(paste(outdir_spillover,"acp_data_with_spill_strict_prior_stochastic.csv",sep=""))
+data$chosp_step <- as.factor(data$hosp_step)
+data$ctrialmonth <- as.factor(data$trialmonth)
+data$cbregion <- as.factor(data$bregion)
+data$cageg <- as.factor(data$ageg)
+data$ccovid_status <- as.factor(data$covid_status)
+data$ccharl_sc <- as.factor(data$charl_sc)
+data$csq <- as.factor(data$sq)
+data$gameTime<-data$total_game_time
+#So that effect-size corresponds to 10 percentage-points, multiply the following by 10
+data$physWPost_strict <- (10/8)*data$physWPost_strict #8 = max internal physicians encountered. Standardize this way to get similarly-sized estimates to those for phase. However, its max value is < 1 = max(physWPost_strict_ext_tinv) because we divide by the total number of intervened physicians and the internal peers were not intervened on until the same step as the focal physician.
+data$physWPost_strict_ext <- 10*data$physWPost_strict_ext  
+```
+
+#Carly's data and output transforming functions:
+
+For nicer output:
+
+```{r, include=FALSE}
+variable_mapping <- list(
+  #"(Intercept)" = "Baseline",
+  "gameTime" = "Game Time",
+  "chosp_step2" = "Step of the trial (Two)",
+  "chosp_step3" = "Step of the trial (Three)",
+  "chosp_step4" = "Step of the trial (Four)",
+  "chosp_step5" = "Step of the trial (Five)",
+  "n_intervened_mds" = "Number of Intervened Physicians Associated with Stay",
+  "n_stay_mds" = "Number of Physicians Associated with Stay",
+  "physWPost" = "Physician Spillover",
+  "ctrialmonth2" = "Month of the Trial (Two)",
+  "ctrialmonth3" = "Month of the Trial (Three)",
+  "ctrialmonth4" = "Month of the Trial (Four)",
+  "ctrialmonth5" = "Month of the Trial (Five)",
+  "ctrialmonth6" = "Month of the Trial (Six)",
+  "ctrialmonth7" = "Month of the Trial (Seven)",
+  "ctrialmonth8" = "Month of the Trial (Eight)",
+  "ctrialmonth9" = "Month of the Trial (Nine)",
+  "ctrialmonth10" = "Month of the Trial (Ten)",
+  "ctrialmonth11" = "Month of the Trial (Eleven)",
+  "ctrialday" = "Trial Day",
+  "cbregionsouth" = "Region (South)",
+  "cbregionwest" = "Region (West)",
+  "cageg75" = "Patient age (75–84 years)",
+  "cageg85" = "Patient age (≥ 85 years)",
+  "ccovid_statusYes" = "Covid status (Covid positive)",
+  "cad_cd" = "Coronary artery disease",
+  "dem_cd" = "Dementia",
+  "heart_cd" = "Heart failure",
+  "diab_cd" = "Diabetes",
+  "lung_cd" = "COPD",
+  "ccharl_sc1" = "Charlson score (One)",
+  "ccharl_sc2" = "Charlson score (Two)",
+  "ccharl_sc3" = "Charlson score (Three)",
+  "ccharl_sc4" = "Charlson score (Four)",
+  "ccharl_sc5" = "Charlson score (Five)",
+  "n_w2mds" = "Practice size",
+  "covid_stays" = "Proportion of hospitalizations with COVID",
+  "Q2_Y20_Adj_ACP" = "ACP rate in Quarter 2 of 2020 (effect of a 10 percentage-point increase)",
+  "Delta_ACP" = "Change in ACP rate between Q2 of 2019 and Q1 of 2020",
+  "csqY" = "Would you be surprised if the patient died in the next year (Yes)",
+  "phase" = "Intervention",
+  "scaled_days_since_intervention" = "Day since hospital intervention"
+)
+
+reorder_by_priority<-function(df,priority_vars){
+  for(var in rev(priority_vars)){
+    if(var %in% df$Term){
+      priority_row <- which(df$Term==var)
+      df<-rbind(df[priority_row,],df[-priority_row,])
+    }
+  }
+  return(df)
+}
+
+format_model_output_logistic <- function(model, variable_mapping) {
+  # Exponentiate estimates for odds ratios
+  tidy_model <- broom.mixed::tidy(model) %>%
+    mutate(estimate = exp(estimate))
+
+  # Dynamically replace term components based on mapping
+  tidy_model$term <- sapply(tidy_model$term, function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Calculate and exponentiate 95% CI for odds ratios
+  ci <- exp(confint(model, method="Wald", level=0.95))
+  ci_df <- as.data.frame(ci)
+  names(ci_df) <- c("lower_ci", "upper_ci")
+  ci_df$term<-sapply(row.names(ci_df), function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Merge tidy model output with CIs
+  tidy_model <- left_join(tidy_model,ci_df)
+  
+  # Include formatted output with Odds Ratios, CIs, and p-values
+  tidy_model <- tidy_model %>%
+    mutate(formatted_p = ifelse(p.value>=0.001,round(p.value,3),"<0.001"),
+      formatted_output = paste0(round(estimate, 3),
+                                     " (", round(lower_ci, 3), ", ", round(upper_ci, 3), ")"))
+  
+  # Define priority variables and their interactions
+  priority_vars <- c("(Intercept)","Intervention", "Game Time", "Number of Intervened Physicians Associated with Stay",
+                     "Number of Physicians Associated with Stay","Physician Spillover", "Day since hospital intervention","retention","Step of the trial", "Proportion of hospitalizations with COVID")
+  
+  tidy_model$Term <- tidy_model$term
+  tidy_model<-reorder_by_priority(tidy_model,priority_vars = priority_vars)
+  
+  # Select and rename columns for publication
+  tidy_model <- tidy_model %>%
+    select(Term = term, Formatted = formatted_output, P_Value_Formatted = formatted_p)
+  
+  return(tidy_model)
+}
+
+```
+
+We've constructed a variable called `day_since_intervention` which is the `trial_day` variable - `intervention_day` (taken as the minimum day where `phase==1` for each hospital) if `day_since_intervention`>0; and 0 otherwise. Note, each stay here is assigned a 'trial day' despite stays operating over many days. I'll need to check with Megan to confirm how this assignment occurred so we can be away of any limitations. 
+
+```{r}
+plot(data$day_since_intervention,data$trialday)
+```
+
+If we run our model with `day_since_intervention` as is, we get two warnings.
+
+1. fixed-effect model matrix is rank deficient so dropping 1 column / coefficient
+2. Warning: Some predictor variables are on very different scales: consider rescaling
+
+It ends up dropping the interaction term of `phase` and `day_since_intervention`.
+
+
+I'm going to suggest, for now, we redefine a scaled version of this variable:
+
+```{r}
+# scaling and rank deficient issue continued
+data$scaled_days_since_intervention<-ifelse(data$day_since_intervention>0,log1p(data$day_since_intervention),0)
+```
+
+which now looks like:
+
+```{r}
+hist(data$scaled_days_since_intervention)
+```
+
+
+Our hypothesis is that spillover effects may shift as we get further from intervention, and social connections reinforcing the intervention may modify the decay of the intervention influence. 
+
+
+We can hard code in an $post \time retention$ and $expose \times post \time retention$ variables:
+
+```{r}
+data$phaseret <- data$phase*data$day_since_intervention/90
+data$phaseexpret <- data$phase*data$physWPost_strict_ext*data$day_since_intervention/90
+data$n_intret <- data$n_intervened_mds*data$day_since_intervention/90
+data$n_intexpret <- data$n_intervened_mds*data$physWPost_strict*data$day_since_intervention/90
+hist(data$phaseret)
+```
+
+## Data setup and functions for potential outcomes evaluation (Do not include n_stay_mds in the phase models) ##
+
+```{r}
+#Expand predictors for step, trial_month, region, charlson score and the surprise question (csq)
+factstep <- cbind(1*(data$chosp_step==2),1*(data$chosp_step==3),1*(data$chosp_step==4),1*(data$chosp_step==5))
+factmonth <- cbind(1*(data$ctrialmonth==2),1*(data$ctrialmonth==3),1*(data$ctrialmonth==4),1*(data$ctrialmonth==5),1*(data$ctrialmonth==6),1*(data$ctrialmonth==7),1*(data$ctrialmonth==8),1*(data$ctrialmonth==9),1*(data$ctrialmonth==10),1*(data$ctrialmonth==11))
+factregion <- cbind(1*(data$cbregion=='south'),1*(data$cbregion=='west'))
+factage <- cbind(1*(data$cageg==75),1*(data$cageg==85))
+factcovid <- 1*(data$ccovid_status=='Yes')
+factccharl <- cbind(1*(data$ccharl_sc==1),1*(data$ccharl_sc==2),1*(data$ccharl_sc==3),1*(data$ccharl_sc==4),1*(data$ccharl_sc==5))
+factcsq <- 1*(data$csq=='Y')
+factintercept <- rep(1,nrow(data))
+datacov <- data.frame(factintercept,data$phase,factstep,factmonth,data$ctrialday,factregion,factage,factcovid,data[,c("cad_cd","dem_cd","heart_cd","diab_cd","lung_cd")],factccharl,data[,c("n_w2mds","covid_stays","Q2_Y20_Adj_ACP","Delta_ACP")],factcsq)
+names(datacov) <- c("intercept","phase",paste("chosp_step",2:5,sep=""),paste("ctrialmonth",2:11,sep=""),"ctrialday",paste("cbregion",c("south","west"),sep=""),paste("age",c(75,85),sep=""),"ccovid_status","cad_cd","dem_cd","heart_cd","diab_cd","lung_cd",paste("ccharl_sc",1:5,sep=""),"n_w2mds","covid_stays","Q2_Y20_Adj_ACP","Delta_ACP","csq")
+
+#Function when a single variable is manipulated
+estpotout <- function(X1,X0,coefs,varb) {
+ lp1 <- as.matrix(X1) %*% coefs
+ lp0 <- as.matrix(X0) %*% coefs
+ pred1 <- exp(lp1)/(1+exp(lp1))
+ pred0 <- exp(lp0)/(1+exp(lp0))
+ est <- mean(pred1-pred0)
+ onc <- rep(1,length(coefs))
+ p1mat <- pred1 %*% onc
+ p0mat <- pred0 %*% onc
+ onr <- rep(1,nrow(X1))
+ onmat <- matrix(1,nrow=nrow(X1),ncol=ncol(X1))
+ del <- t(X1*p1mat*(onmat-p1mat)-X0*p0mat*(onmat-p0mat)) %*% onr
+ se <- as.numeric(sqrt(t(del) %*% varb %*% del)/nrow(X1))
+
+ l95int <- est-qnorm(0.975,0,1)*se
+ u95int <- est+qnorm(0.975,0,1)*se
+ zstat <- est/se
+ pvalue <- 2*(1-pnorm(abs(zstat),0,1))
+ statinf <- c(est,se,l95int,u95int,pvalue)
+ return(statinf)
+}
+
+#Function when a direct and indirect variables are manipulated
+estpotoutint <- function(X1w,X0w,X10,X00,coefs,varb) {
+ lp1w <- as.matrix(X1w) %*% coefs
+ lp0w <- as.matrix(X0w) %*% coefs
+ lp10 <- as.matrix(X10) %*% coefs
+ lp00 <- as.matrix(X00) %*% coefs
+ pred1w <- exp(lp1w)/(1+exp(lp1w))
+ pred0w <- exp(lp0w)/(1+exp(lp0w))
+ pred10 <- exp(lp10)/(1+exp(lp10))
+ pred00 <- exp(lp00)/(1+exp(lp00))
+ est <- mean(pred1w-pred0w-pred10+pred00)
+ onc <- rep(1,length(coefs))
+ p1wmat <- pred1w %*% onc
+ p0wmat <- pred0w %*% onc
+ p10mat <- pred10 %*% onc
+ p00mat <- pred00 %*% onc
+ onr <- rep(1,nrow(X1w))
+ onmat <- matrix(1,nrow=nrow(X1w),ncol=ncol(X1w))
+ del <- t(X1w*p1wmat*(onmat-p1wmat)-X0w*p0wmat*(onmat-p0wmat)-X10*p10mat*(onmat-p10mat)+X00*p00mat*(onmat-p00mat)) %*% onr
+ se <- as.numeric(sqrt(t(del) %*% varb %*% del)/nrow(X1w))
+
+ l95int <- est-qnorm(0.975,0,1)*se
+ u95int <- est+qnorm(0.975,0,1)*se
+ zstat <- est/se
+ pvalue <- 2*(1-pnorm(abs(zstat),0,1))
+ statinf <- c(est,se,l95int,u95int,pvalue)
+ return(statinf)
+}
+
+estpotoutintint <- function(X1wt,X0wt,X1w0,X0w0,X10t,X00t,X100,X000,coefs,varb) {
+ lp1wt <- as.matrix(X1wt) %*% coefs
+ lp0wt <- as.matrix(X0wt) %*% coefs
+ lp1w0 <- as.matrix(X1w0) %*% coefs
+ lp0w0 <- as.matrix(X0w0) %*% coefs
+ lp10t <- as.matrix(X10t) %*% coefs
+ lp00t <- as.matrix(X00t) %*% coefs
+ lp100 <- as.matrix(X100) %*% coefs
+ lp000 <- as.matrix(X000) %*% coefs
+ pred1wt <- exp(lp1wt)/(1+exp(lp1wt))
+ pred0wt <- exp(lp0wt)/(1+exp(lp0wt))
+ pred1w0 <- exp(lp1w0)/(1+exp(lp1w0))
+ pred0w0 <- exp(lp0w0)/(1+exp(lp0w0))
+ pred10t <- exp(lp10t)/(1+exp(lp10t))
+ pred00t <- exp(lp00t)/(1+exp(lp00t))
+ pred100 <- exp(lp100)/(1+exp(lp100))
+ pred000 <- exp(lp000)/(1+exp(lp000))
+ est <- mean(pred1wt-pred0wt-pred1w0+pred0w0-pred10t+pred00t+pred100-pred000)
+ onc <- rep(1,length(coefs))
+ p1wtmat <- pred1wt %*% onc
+ p0wtmat <- pred0wt %*% onc
+ p1w0mat <- pred1w0 %*% onc
+ p0w0mat <- pred0w0 %*% onc
+ p10tmat <- pred10t %*% onc
+ p00tmat <- pred00t %*% onc
+ p100mat <- pred100 %*% onc
+ p000mat <- pred000 %*% onc
+ onr <- rep(1,nrow(X1wt))
+ onmat <- matrix(1,nrow=nrow(X1wt),ncol=ncol(X1wt))
+ del <- t(X1wt*p1wtmat*(onmat-p1wtmat)-X0wt*p0wtmat*(onmat-p0wtmat)-X1w0*p1w0mat*(onmat-p1w0mat)+X0w0*p0w0mat*(onmat-p0w0mat)-X10t*p10tmat*(onmat-p10tmat)+X00t*p00tmat*(onmat-p00tmat)+X100*p100mat*(onmat-p100mat)-X000*p000mat*(onmat-p000mat)) %*% onr
+ se <- as.numeric(sqrt(t(del) %*% varb %*% del)/nrow(X1wt))
+
+ l95int <- est-qnorm(0.975,0,1)*se
+ u95int <- est+qnorm(0.975,0,1)*se
+ zstat <- est/se
+ pvalue <- 2*(1-pnorm(abs(zstat),0,1))
+ statinf <- c(est,se,l95int,u95int,pvalue)
+ return(statinf)  
+}
+
+## Potential outcomes evaluation (Do not include n_stay_mds in the phase models) ##
+## Condition on the mean of the potential outcomes distribution ##
+
+mod_phase <- glmer(acp~phase+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_phase)
+varb <- vcov(mod_phase)
+
+#Estimate ADE and use Delta method to approximate standard errors
+X1 <- datacov; X1$phase <- 1
+X0 <- datacov; X0$phase <- 0
+est_phase_ADE <- estpotout(X1,X0,coefs,varb)
+
+
+mod_phasespill <- glmer(acp~phase+physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_phasespill)
+varb <- vcov(mod_phasespill)
+ncol <- ncol(datacov)
+datacov <- data.frame(datacov[,1:2],spill=data$physWPost_strict_ext,datacov[,3:ncol])
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct intervention and under a 10pp increase) and use Delta method to approximate standard errors
+w <- 0.1*10 #Emulating transformation applied to estimation dataset
+X10 <- datacov; X10$phase <- 1; X10$spill <- 0;
+X00 <- datacov; X00$phase <- 0; X00$spill <- 0;
+X0w <- datacov; X0w$phase <- 0; X0w$spill <- w;
+est_phasespill_ADE <- estpotout(X10,X00,coefs,varb)
+est_phasespill_AIE <- estpotout(X0w,X00,coefs,varb)
+
+
+mod_phasespillint <- glmer(acp~phase*physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+#In terms of BIC, it looks like both terms don't improve the model; thus dose interpolates phase
+coefs <- fixef(mod_phasespillint)
+varb <- vcov(mod_phasespillint)
+datacov <- data.frame(datacov,intspill=datacov$phase*datacov$spill)
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct effect and under a 10pp increase) and use Delta method to approximate standard errors
+#Estimate ACE (with 10pp increase in peer-exposure) and use Delta method to approximate standard errors
+#ACE(0.1) = ADE(0.1)-ADE(0) under interaction model
+X1w <- datacov; X1w$phase <- 1; X1w$spill <- w; X1w$intspill <- X1w$phase*X1w$spill
+X0w <- datacov; X0w$phase <- 0; X0w$spill <- w; X0w$intspill <- X0w$phase*X0w$spill
+X10 <- datacov; X10$phase <- 1; X10$spill <- 0; X10$intspill <- X10$phase*X10$spill
+X00 <- datacov; X00$phase <- 0; X00$spill <- 0; X00$intspill <- X00$phase*X00$spill
+est_phasespillint_ADE <- estpotout(X10,X00,coefs,varb)
+est_phasespillint_AIE <- estpotout(X0w,X00,coefs,varb)
+est_phasespillint_ACE <- estpotoutint(X1w,X0w,X10,X00,coefs,varb)
+
+
+mod_phasespillintret <- glmer(acp~phase*physWPost_strict_ext+phaseret+phaseexpret+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+#In terms of BIC, it looks like both terms don't improve the model; thus dose interpolates phase
+coefs <- fixef(mod_phasespillintret)
+varb <- vcov(mod_phasespillintret)
+ncol <- ncol(datacov)
+datacov <- data.frame(datacov[,1:3],phaseret=data$phaseret,phaseexpret=data$phaseexpret,datacov[,4:ncol])
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct effect and under a 10pp increase) and use Delta method to approximate standard errors
+#Estimate ACE (with 10pp increase in peer-exposure) and use Delta method to approximate standard errors
+#ACE(0.1) = ADE(0.1)-ADE(0) under interaction model
+t <- 1 #=90/90, emulating transformation applied to estimation dataset
+X1w0 <- datacov; X1w0$phase <- 1; X1w0$spill <- w; X1w0$intspill <- X1w0$phase*X1w0$spill; X1w0$phaseret <- X1w0$phase*0; X1w0$phaseexpret <- X1w0$intspill*0
+X0w0 <- datacov; X0w0$phase <- 0; X0w0$spill <- w; X0w0$intspill <- X0w0$phase*X0w0$spill; X0w0$phaseret <- X0w0$phase*0; X0w0$phaseexpret <- X0w0$intspill*0
+X100 <- datacov; X100$phase <- 1; X100$spill <- 0; X100$intspill <- X100$phase*X100$spill; X100$phaseret <- X100$phase*0; X100$phaseexpret <- X100$intspill*0
+X000 <- datacov; X000$phase <- 0; X000$spill <- 0; X000$intspill <- X000$phase*X000$spill; X000$phaseret <- X000$phase*0; X000$phaseexpret <- X000$intspill*0
+X1wt <- datacov; X1wt$phase <- 1; X1wt$spill <- w; X1wt$intspill <- X1wt$phase*X1wt$spill; X1wt$phaseret <- X1wt$phase*t; X1wt$phaseexpret <- X1wt$intspill*t
+X0wt <- datacov; X0wt$phase <- 0; X0wt$spill <- w; X0wt$intspill <- X0wt$phase*X0wt$spill; X0wt$phaseret <- X0wt$phase*t; X0wt$phaseexpret <- X0wt$intspill*t
+X10t <- datacov; X10t$phase <- 1; X10t$spill <- 0; X10t$intspill <- X10t$phase*X10t$spill; X10t$phaseret <- X10t$phase*t; X10t$phaseexpret <- X10t$intspill*t
+X00t <- datacov; X00t$phase <- 0; X00t$spill <- 0; X00t$intspill <- X00t$phase*X00t$spill; X00t$phaseret <- X00t$phase*t; X00t$phaseexpret <- X00t$intspill*t
+est_phasespillintret_ADE <- estpotout(X100,X000,coefs,varb)
+est_phasespillintret_AIE <- estpotout(X0w0,X000,coefs,varb)
+est_phasespillintret_ACE <- estpotoutint(X1w0,X0w0,X100,X000,coefs,varb)
+est_phasespillintret_ASE <- estpotoutint(X10t,X00t,X100,X000,coefs,varb)
+est_phasespillintret_ARE <- estpotoutintint(X1wt,X0wt,X1w0,X0w0,X10t,X00t,X100,X000,coefs,varb)
+
+
+#Dose-response models and time varying network case
+datacov <- data.frame(factintercept,data[,c("n_intervened_mds","n_stay_mds")],factstep,factmonth,data$ctrialday,factregion,factage,factcovid,data[,c("cad_cd","dem_cd","heart_cd","diab_cd","lung_cd")],factccharl,data[,c("n_w2mds","covid_stays","Q2_Y20_Adj_ACP","Delta_ACP")],factcsq)
+names(datacov) <- c("intercept","n_intervened_mds","n_stay_mds",paste("chosp_step",2:5,sep=""),paste("ctrialmonth",2:11,sep=""),"ctrialday",paste("cbregion",c("south","west"),sep=""),paste("age",c(75,85),sep=""),"ccovid_status","cad_cd","dem_cd","heart_cd","diab_cd","lung_cd",paste("ccharl_sc",1:5,sep=""),"n_w2mds","covid_stays","Q2_Y20_Adj_ACP","Delta_ACP","csq")
+
+mod_dose <- glmer(acp~n_intervened_mds+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_dose)
+varb <- vcov(mod_dose)
+
+#Estimate ADE and use Delta method to approximate standard errors
+basedose <- mean(data$n_intervened_mds,na.rm=TRUE)
+X1 <- datacov; X1$n_intervened_mds <- basedose+0.5
+X0 <- datacov; X0$n_intervened_mds <- basedose-0.5
+est_dose_ADE <- estpotout(X1,X0,coefs,varb)
+
+
+mod_dosespill <- glmer(acp~n_intervened_mds+physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_dosespill)
+varb <- vcov(mod_dosespill)
+ncol <- ncol(datacov)
+datacov <- data.frame(datacov[,1:2],spill=data$physWPost_strict,datacov[,3:ncol])
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct intervention and under a 10pp increase) and use Delta method to approximate standard errors
+w <- 1 #To emulate transformation applied to the dataset used for estimation
+X10 <- datacov; X10$n_intervened_mds <- basedose+0.5; X10$spill <- 0;
+X00 <- datacov; X00$n_intervened_mds <- basedose-0.5; X00$spill <- 0;
+X0w <- datacov; X0w$n_intervened_mds <- basedose-0.5; X0w$spill <- w;
+est_dosespill_ADE <- estpotout(X10,X00,coefs,varb)
+est_dosespill_AIE <- estpotout(X0w,X00,coefs,varb)
+
+
+mod_dosespillint <- glmer(acp~n_intervened_mds*physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_dosespillint)
+varb <- vcov(mod_dosespillint)
+datacov <- data.frame(datacov,intspill=datacov$n_intervened_mds*datacov$spill)
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct effect and under a 10pp increase) and use Delta method to approximate standard errors
+#Estimate ACE (with 10pp increase in peer-exposure) and use Delta method to approximate standard errors
+#ACE(0.1) = ADE(0.1)-ADE(0) under interaction model
+X1w <- datacov; X1w$n_intervened_mds <- basedose+0.5; X1w$spill <- w; X1w$intspill <- X1w$n_intervened_mds*X1w$spill
+X0w <- datacov; X0w$n_intervened_mds <- basedose-0.5; X0w$spill <- w; X0w$intspill <- X0w$n_intervened_mds*X0w$spill
+X10 <- datacov; X10$n_intervened_mds <- basedose+0.5; X10$spill <- 0; X10$intspill <- X10$n_intervened_mds*X10$spill
+X00 <- datacov; X00$n_intervened_mds <- basedose-0.5; X00$spill <- 0; X00$intspill <- X00$n_intervened_mds*X00$spill
+est_dosespillint_ADE <- estpotout(X10,X00,coefs,varb)
+est_dosespillint_AIE <- estpotout(X0w,X00,coefs,varb)
+est_dosespillint_ACE <- estpotoutint(X1w,X0w,X10,X00,coefs,varb)
+
+
+mod_dosespillintret <- glmer(acp~n_intervened_mds*physWPost_strict+n_intret+n_intexpret+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+(1|HospitalID),family=binomial(link="logit"),nAGQ=2,data=data)
+coefs <- fixef(mod_dosespillintret)
+varb <- vcov(mod_dosespillintret)
+ncol <- ncol(datacov)
+datacov <- data.frame(datacov[,1:3],n_ret=data$n_intret,n_expret=data$n_intexpret,datacov[,4:ncol])
+
+#Estimate ADE (absent spillover) and use Delta method to approximate standard errors
+#Estimate AIE (absent direct effect and under a 10pp increase) and use Delta method to approximate standard errors
+#Estimate ACE (with 10pp increase in peer-exposure) and use Delta method to approximate standard errors
+#ACE(0.1) = ADE(0.1)-ADE(0) under interaction model
+t <- 1
+X1w0 <- datacov; X1w0$n_intervened_mds <- basedose+0.5; X1w0$spill <- w; X1w0$intspill <- X1w0$n_intervened_mds*X1w0$spill; X1w0$n_ret <- X1w0$n_intervened_mds*0; X1w0$n_expret <- X1w0$intspill*0
+X0w0 <- datacov; X0w0$n_intervened_mds <- basedose-0.5; X0w0$spill <- w; X0w0$intspill <- X0w0$n_intervened_mds*X0w0$spill; X0w0$n_ret <- X0w0$n_intervened_mds*0; X0w0$n_expret <- X0w0$intspill*0
+X100 <- datacov; X100$n_intervened_mds <- basedose+0.5; X100$spill <- 0; X100$intspill <- X100$n_intervened_mds*X100$spill; X100$n_ret <- X100$n_intervened_mds*0; X100$n_expret <- X100$intspill*0
+X000 <- datacov; X000$n_intervened_mds <- basedose-0.5; X000$spill <- 0; X000$intspill <- X000$n_intervened_mds*X000$spill; X000$n_ret <- X000$n_intervened_mds*0; X000$n_expret <- X000$intspill*0
+X1wt <- datacov; X1wt$n_intervened_mds <- basedose+0.5; X1wt$spill <- w; X1wt$intspill <- X1wt$n_intervened_mds*X1wt$spill; X1wt$n_ret <- X1wt$n_intervened_mds*t; X1wt$n_expret <- X1wt$intspill*t
+X0wt <- datacov; X0wt$n_intervened_mds <- basedose-0.5; X0wt$spill <- w; X0wt$intspill <- X0wt$n_intervened_mds*X0wt$spill; X0wt$n_ret <- X0wt$n_intervened_mds*t; X0wt$n_expret <- X0wt$intspill*t
+X10t <- datacov; X10t$n_intervened_mds <- basedose+0.5; X10t$spill <- 0; X10t$intspill <- X10t$n_intervened_mds*X10t$spill; X10t$n_ret <- X10t$n_intervened_mds*t; X10t$n_expret <- X10t$intspill*t
+X00t <- datacov; X00t$n_intervened_mds <- basedose-0.5; X00t$spill <- 0; X00t$intspill <- X00t$n_intervened_mds*X00t$spill; X00t$n_ret <- X00t$n_intervened_mds*t; X00t$n_expret <- X00t$intspill*t
+est_dosespillintret_ADE <- estpotout(X100,X000,coefs,varb)
+est_dosespillintret_AIE <- estpotout(X0w0,X000,coefs,varb)
+est_dosespillintret_ACE <- estpotoutint(X1w0,X0w0,X100,X000,coefs,varb)
+est_dosespillintret_ASE <- estpotoutint(X10t,X00t,X100,X000,coefs,varb)
+est_dosespillintret_ARE <- estpotoutintint(X1wt,X0wt,X1w0,X0w0,X10t,X00t,X100,X000,coefs,varb)
+
+mod_phase_res<-format_model_output_logistic(mod_phase,variable_mapping = variable_mapping)
+write.csv(mod_phase_res,"causal_spillover_phase.csv",row.names=F)
+
+mod_phasespill_res<-format_model_output_logistic(mod_phasespill,variable_mapping = variable_mapping)
+write.csv(mod_phasespill_res,"causal_spillover_phasespill.csv",row.names=F)
+
+mod_phasespillint_res<-format_model_output_logistic(mod_phasespillint,variable_mapping = variable_mapping)
+write.csv(mod_phasespillint_res,"causal_spillover_phasespillint.csv",row.names=F)
+
+mod_phasespillintret_res<-format_model_output_logistic(mod_phasespillintret,variable_mapping = variable_mapping)
+write.csv(mod_phasespillintret_res,"causal_spillover_phasespillintret.csv",row.names=F)
+
+mod_dose_res<-format_model_output_logistic(mod_dose,variable_mapping = variable_mapping)
+write.csv(mod_dose_res,"causal_spillover_dose.csv",row.names=F)
+
+mod_dosespill_res<-format_model_output_logistic(mod_dosespill,variable_mapping = variable_mapping)
+write.csv(mod_dosespill_res,"causal_spillover_dosespill.csv",row.names=F)
+
+mod_dosespillint_res<-format_model_output_logistic(mod_dosespillint,variable_mapping = variable_mapping)
+write.csv(mod_dosespillint_res,"causal_spillover_dosespillint.csv",row.names=F)
+
+mod_dosespillintret_res<-format_model_output_logistic(mod_dosespillintret,variable_mapping = variable_mapping)
+write.csv(mod_dosespillintret_res,"causal_spillover_dosespillintret.csv",row.names=F)
+
+## Output estimates of potential outcomes and associated inferential quantities ##
+
+outphase <- matrix(c(est_phase_ADE,est_phasespill_ADE,est_phasespill_AIE,est_phasespillint_ADE,est_phasespillint_AIE,est_phasespillint_ACE,est_phasespillintret_ADE,est_phasespillintret_AIE,est_phasespillintret_ACE,est_phasespillintret_ASE,est_phasespillintret_ARE),ncol=5,byrow=T)
+outphase <- data.frame(outphase)
+names(outphase) <- c("estimate","SE","Low95","Up95","p-value")
+write.csv(outphase,"causal_spillover_phase_potout.csv",row.names=F)
+
+outdose <- matrix(c(est_dose_ADE,est_dosespill_ADE,est_dosespill_AIE,est_dosespillint_ADE,est_dosespillint_AIE,est_dosespillint_ACE,est_dosespillintret_ADE,est_dosespillintret_AIE,est_dosespillintret_ACE,est_dosespillintret_ASE,est_dosespillintret_ARE),ncol=5,byrow=T)
+outdose <- data.frame(outdose)
+names(outdose) <- c("estimate","SE","Low95","Up95","p-value")
+write.csv(outdose,"causal_spillover_dose_potout.csv",row.names=F)
+```
+

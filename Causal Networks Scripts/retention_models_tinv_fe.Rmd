@@ -1,0 +1,286 @@
+## Script for Network augmented SW-CRT fixed-effects and GEE analysis when network is fixed at baseline ##
+## Carly's backbone script with James model specification ##
+
+---
+title: "Publication Facing Script"
+output: html_notebook
+---
+
+## Load our libraries
+
+```{r}
+#install.packages("broom.mixed",repos=NULL,contriburl="file:/opt/software/cran/src/contrib")
+library(lme4)
+library(nlme)
+library(Gmisc)
+library(dplyr)
+library(ggplot2)
+library(ggpubr)
+library(broom.mixed)
+library(geepack)
+```
+
+Setting glmer options:
+
+```{r}
+#options(lme4.control=glmerControl(optimizer="nloptwrap",calc.derivs = F)) #Carly
+options(lme4.control=glmerControl(optimizer="bobyqa",tolPwrss=1e-7,optCtrl=list(maxfun=1e5))) #James
+```
+
+#Optimization settings to avoidmitigate convergence warnings:
+#mod_spill <- glmer("model",family=binomial(link="logit"),data=data, nAGQ=2, #control=glmerControl(optimizer="bobyqa",tolPwrss=1e-7,optCtrl=list(maxfun=1e5)))
+
+## Load in the Data
+
+```{r}
+#set some new pathways
+outdir<-"/drives/drive1/54054dua/idata/cbobak/"
+outdir_spillover<-paste(outdir,"spillover_analysis/",sep="")
+data<-read.csv(paste(outdir_spillover,"acp_data_with_spill_strict_prior_stochastic.csv",sep=""))
+data$chosp_step <- as.factor(data$hosp_step)
+data$ctrialmonth <- as.factor(data$trialmonth)
+data$cbregion <- as.factor(data$bregion)
+data$cageg <- as.factor(data$ageg)
+data$ccovid_status <- as.factor(data$covid_status)
+data$ccharl_sc <- as.factor(data$charl_sc)
+data$csq <- as.factor(data$sq)
+data$gameTime<-data$total_game_time
+#So that effect-size corresponds to 10 percentage-points, multiply the following by 10
+data$physWPost_strict <- (10/8)*data$physWPost_tinv #8 = max internal physicians encountered. Standardize this way to get similarly-sized estimates to those for phase. However, its max value is < 1 = max(physWPost_strict_ext_tinv) because we divide by the total number of intervened physicians and the internal peers were not intervened on until the same step as the focal physician.
+data$physWPost_strict_ext <- 10*data$physWPost_strict_ext_tinv
+```
+
+#Carly's data and output transforming functions:
+
+For nicer output:
+
+```{r, include=FALSE}
+variable_mapping <- list(
+  #"(Intercept)" = "Baseline",
+  "gameTime" = "Game Time",
+  "chosp_step2" = "Step of the trial (Two)",
+  "chosp_step3" = "Step of the trial (Three)",
+  "chosp_step4" = "Step of the trial (Four)",
+  "chosp_step5" = "Step of the trial (Five)",
+  "n_intervened_mds" = "Number of Intervened Physicians Associated with Stay",
+  "n_stay_mds" = "Number of Physicians Associated with Stay",
+  "physWPost" = "Physician Spillover",
+  "ctrialmonth2" = "Month of the Trial (Two)",
+  "ctrialmonth3" = "Month of the Trial (Three)",
+  "ctrialmonth4" = "Month of the Trial (Four)",
+  "ctrialmonth5" = "Month of the Trial (Five)",
+  "ctrialmonth6" = "Month of the Trial (Six)",
+  "ctrialmonth7" = "Month of the Trial (Seven)",
+  "ctrialmonth8" = "Month of the Trial (Eight)",
+  "ctrialmonth9" = "Month of the Trial (Nine)",
+  "ctrialmonth10" = "Month of the Trial (Ten)",
+  "ctrialmonth11" = "Month of the Trial (Eleven)",
+  "ctrialday" = "Trial Day",
+  "cbregionsouth" = "Region (South)",
+  "cbregionwest" = "Region (West)",
+  "cageg75" = "Patient age (75–84 years)",
+  "cageg85" = "Patient age (≥ 85 years)",
+  "ccovid_statusYes" = "Covid status (Covid positive)",
+  "cad_cd" = "Coronary artery disease",
+  "dem_cd" = "Dementia",
+  "heart_cd" = "Heart failure",
+  "diab_cd" = "Diabetes",
+  "lung_cd" = "COPD",
+  "ccharl_sc1" = "Charlson score (One)",
+  "ccharl_sc2" = "Charlson score (Two)",
+  "ccharl_sc3" = "Charlson score (Three)",
+  "ccharl_sc4" = "Charlson score (Four)",
+  "ccharl_sc5" = "Charlson score (Five)",
+  "n_w2mds" = "Practice size",
+  "covid_stays" = "Proportion of hospitalizations with COVID",
+  "Q2_Y20_Adj_ACP" = "ACP rate in Quarter 2 of 2020 (effect of a 10 percentage-point increase)",
+  "Delta_ACP" = "Change in ACP rate between Q2 of 2019 and Q1 of 2020",
+  "csqY" = "Would you be surprised if the patient died in the next year (Yes)",
+  "phase" = "Intervention",
+  "scaled_days_since_intervention" = "Day since hospital intervention"
+)
+
+reorder_by_priority<-function(df,priority_vars){
+  for(var in rev(priority_vars)){
+    if(var %in% df$Term){
+      priority_row <- which(df$Term==var)
+      df<-rbind(df[priority_row,],df[-priority_row,])
+    }
+  }
+  return(df)
+}
+
+format_model_output_logistic <- function(model, variable_mapping) {
+  # Exponentiate estimates for odds ratios
+  tidy_model <- broom.mixed::tidy(model) %>%
+    mutate(estimate = exp(estimate))
+
+  # Dynamically replace term components based on mapping
+  tidy_model$term <- sapply(tidy_model$term, function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Calculate and exponentiate 95% CI for odds ratios
+  ci <- exp(confint(model, method="Wald", level=0.95))
+  ci_df <- as.data.frame(ci)
+  names(ci_df) <- c("lower_ci", "upper_ci")
+  ci_df$term<-sapply(row.names(ci_df), function(term) {
+    components <- unlist(strsplit(term, ":"))
+    mapped_components <- sapply(components, function(component) {
+      if (component %in% names(variable_mapping)) {
+        return(variable_mapping[[component]])
+      } else {
+        return(component)
+      }
+    })
+    return(paste(mapped_components, collapse = " x "))
+  })
+  
+  # Merge tidy model output with CIs
+  tidy_model <- left_join(tidy_model,ci_df)
+  
+  # Include formatted output with Odds Ratios, CIs, and p-values
+  tidy_model <- tidy_model %>%
+    mutate(formatted_p = ifelse(p.value>=0.001,round(p.value,3),"<0.001"),
+      formatted_output = paste0(round(estimate, 3),
+                                     " (", round(lower_ci, 3), ", ", round(upper_ci, 3), ")"))
+  
+  # Define priority variables and their interactions
+  priority_vars <- c("(Intercept)","Intervention", "Game Time", "Number of Intervened Physicians Associated with Stay",
+                     "Number of Physicians Associated with Stay","Physician Spillover", "Day since hospital intervention","retention","Step of the trial", "Proportion of hospitalizations with COVID")
+  
+  tidy_model$Term <- tidy_model$term
+  tidy_model<-reorder_by_priority(tidy_model,priority_vars = priority_vars)
+  
+  # Select and rename columns for publication
+  tidy_model <- tidy_model %>%
+    select(Term = term, Formatted = formatted_output, P_Value_Formatted = formatted_p)
+  
+  return(tidy_model)
+}
+
+```
+
+We've constructed a variable called `day_since_intervention` which is the `trial_day` variable - `intervention_day` (taken as the minimum day where `phase==1` for each hospital) if `day_since_intervention`>0; and 0 otherwise. Note, each stay here is assigned a 'trial day' despite stays operating over many days. I'll need to check with Megan to confirm how this assignment occurred so we can be away of any limitations. 
+
+```{r}
+plot(data$day_since_intervention,data$trialday)
+```
+
+If we run our model with `day_since_intervention` as is, we get two warnings.
+
+1. fixed-effect model matrix is rank deficient so dropping 1 column / coefficient
+2. Warning: Some predictor variables are on very different scales: consider rescaling
+
+It ends up dropping the interaction term of `phase` and `day_since_intervention`.
+
+
+I'm going to suggest, for now, we redefine a scaled version of this variable:
+
+```{r}
+# scaling and rank deficient issue continued
+data$scaled_days_since_intervention<-ifelse(data$day_since_intervention>0,log1p(data$day_since_intervention),0)
+```
+
+which now looks like:
+
+```{r}
+hist(data$scaled_days_since_intervention)
+```
+
+
+Our hypothesis is that spillover effects may shift as we get further from intervention, and social connections reinforcing the intervention may modify the decay of the intervention influence. 
+
+
+We can hard code in an $post \time retention$ and $expose \times post \time retention$ variables:
+
+```{r}
+data$phaseret <- data$phase*data$day_since_intervention/90
+data$phaseexpret <- data$phase*data$physWPost_strict_ext*data$day_since_intervention/90
+data$n_intret <- data$n_intervened_mds*data$day_since_intervention/90
+data$n_intexpret <- data$n_intervened_mds*data$physWPost_strict*data$day_since_intervention/90
+hist(data$phaseret)
+```
+
+## Fixed-effect and GEE models with time-invariant network estimated in paper (Do not include n_stay_mds in the phase models) ##
+
+```{r}
+mod_phase <- glm(acp~phase+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_phase_gee <- geeglm(acp~phase+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_phasespill <- glm(acp~phase+physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_phasespill_gee <- geeglm(acp~phase+physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_phasespillint <- glm(acp~phase*physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_phasespillint_gee <- geeglm(acp~phase*physWPost_strict_ext+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_phasespillintret <- glm(acp~phase*physWPost_strict_ext+phaseret+phaseexpret+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_phasespillintret_gee <- geeglm(acp~phase*physWPost_strict_ext+phaseret+phaseexpret+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_dose <- glm(acp~n_intervened_mds+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_dose_gee <- geeglm(acp~n_intervened_mds+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_dosespill <- glm(acp~n_intervened_mds+physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_dosespill_gee <- geeglm(acp~n_intervened_mds+physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_dosespillint <- glm(acp~n_intervened_mds*physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_dosespillint_gee <- geeglm(acp~n_intervened_mds*physWPost_strict+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+mod_dosespillintret <- glm(acp~n_intervened_mds*physWPost_strict+n_intret+n_intexpret+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq+factor(HospitalID),family=binomial(link="logit"),data=data)
+
+mod_dosespillintret_gee <- geeglm(acp~n_intervened_mds*physWPost_strict+n_intret+n_intexpret+n_stay_mds+chosp_step+ctrialmonth+ctrialday+cbregion+cageg+ccovid_status+cad_cd+dem_cd+heart_cd+diab_cd+lung_cd+ccharl_sc+n_w2mds+covid_stays+Q2_Y20_Adj_ACP+Delta_ACP+csq,family=binomial(link="logit"),id=HospitalID,corstr='exchangeable',data=data)
+
+#Output results of fixed-effect analyses
+mod_phase_res<-format_model_output_logistic(mod_phase,variable_mapping = variable_mapping)
+write.csv(mod_phase_res,"causal_spillover_phase_tinv_fe.csv",row.names=F)
+
+mod_phasespill_res<-format_model_output_logistic(mod_phasespill,variable_mapping = variable_mapping)
+write.csv(mod_phasespill_res,"causal_spillover_phasespill_tinv_fe.csv",row.names=F)
+
+mod_phasespillint_res<-format_model_output_logistic(mod_phasespillint,variable_mapping = variable_mapping)
+write.csv(mod_phasespillint_res,"causal_spillover_phasespillint_tinv_fe.csv",row.names=F)
+
+mod_phasespillintret_res<-format_model_output_logistic(mod_phasespillintret,variable_mapping = variable_mapping)
+write.csv(mod_phasespillintret_res,"causal_spillover_phasespillintret_tinv_fe.csv",row.names=F)
+
+mod_dose_res<-format_model_output_logistic(mod_dose,variable_mapping = variable_mapping)
+write.csv(mod_dose_res,"causal_spillover_dose_tinv_fe.csv",row.names=F)
+
+mod_dosespill_res<-format_model_output_logistic(mod_dosespill,variable_mapping = variable_mapping)
+write.csv(mod_dosespill_res,"causal_spillover_dosespill_tinv_fe.csv",row.names=F)
+
+mod_dosespillint_res<-format_model_output_logistic(mod_dosespillint,variable_mapping = variable_mapping)
+write.csv(mod_dosespillint_res,"causal_spillover_dosespillint_tinv_fe.csv",row.names=F)
+
+mod_dosespillintret_res<-format_model_output_logistic(mod_dosespillintret,variable_mapping = variable_mapping)
+write.csv(mod_dosespillintret_res,"causal_spillover_dosespillintret_tinv_fe.csv",row.names=F)
+
+#Output results of GEE analyses
+sink(file="causal_spillover_tinv_gee.txt")
+summary(mod_phase_gee)
+summary(mod_phasespill_gee)
+summary(mod_phasespillint_gee)
+summary(mod_phasespillintret_gee) 
+summary(mod_dose_gee)
+summary(mod_dosespill_gee)
+summary(mod_dosespillint_gee)
+summary(mod_dosespillintret_gee)
+sink()
+
+```
+
